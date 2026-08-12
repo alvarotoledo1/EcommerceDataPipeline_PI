@@ -2,441 +2,323 @@
 
 **Alumno: Alvaro Julian Toledo**
 
-En el siguiente proyecto se desarrolla un **pipeline de datos end-to-end** utilizando el dataset público de comercio electrónico de **Olist**.
+En el siguiente proyecto se construye un **pipeline de datos end-to-end** sobre el dataset público de comercio electrónico de **Olist**, que registra alrededor de 100.000 pedidos realizados en Brasil entre 2016 y 2018.
 
-El trabajo parte de los datos originales, estudia su estructura y realiza las transformaciones necesarias para convertirlos en información **limpia, consistente, validada y preparada para análisis**.
+El punto de partida son datos transaccionales originales: archivos separados, con distintas granularidades, campos sin tipar y sin ninguna regla de negocio aplicada. El pipeline los recorre progresivamente hasta convertirlos en un dataset consistente, validado y preparado para análisis.
 
-Para organizar el procesamiento se utiliza una arquitectura **Medallion**, compuesta por las capas **Bronze, Silver y Gold**. El pipeline combina **PySpark** para el procesamiento, **dbt** para el modelado analítico, **MinIO** para el almacenamiento, **Airflow** para la orquestación y **Docker** para mantener un entorno reproducible.
+El procesamiento se organiza en una arquitectura **Medallion** de tres capas —Bronze, Silver y Gold—, donde cada una tiene una responsabilidad definida. **PySpark** se encarga del procesamiento, **dbt** del modelado analítico, **MinIO** del almacenamiento, **Airflow** de la orquestación y **Docker** de mantener un entorno reproducible.
 
-El resultado final es un dataset de **ventas diarias por producto**, preparado para ser utilizado posteriormente en análisis, reportes o herramientas de visualización.
-
----
-
-## 1. Introducción
-
-En un proyecto de ingeniería de datos, los archivos de origen normalmente no se encuentran listos para ser analizados.
-
-Pueden existir datos distribuidos entre diferentes fuentes, columnas con tipos incorrectos, valores nulos, distintas granularidades o reglas de negocio que todavía no fueron aplicadas.
-
-En este proyecto se parte de datos transaccionales reales de Olist y se construye un flujo que permite recorrer todo el proceso:
-
-```text
-Datos originales
-      │
-      ▼
-   Bronze
-      │
-      ▼
-   Silver
-      │
-      ▼
-    Gold
-      │
-      ▼
-Dataset preparado para análisis
-```
-
-Cada etapa tiene una responsabilidad específica y cuenta con controles que permiten verificar que los datos mantengan su consistencia durante el recorrido.
+El resultado es `daily_product_sales`, un dataset de ventas diarias por producto listo para ser consumido por herramientas de análisis o visualización.
 
 ---
 
-## 2. Objetivo
+## Contenido
 
-### Objetivo general
+| # | Sección |
+| - | ------- |
+| 1 | [Objetivo](#1-objetivo) |
+| 2 | [Cómo ejecutar el proyecto](#2-cómo-ejecutar-el-proyecto) |
+| 3 | [Dataset y alcance](#3-dataset-y-alcance) |
+| 4 | [Exploración inicial](#4-exploración-inicial) |
+| 5 | [Arquitectura del pipeline](#5-arquitectura-del-pipeline) |
+| 6 | [Capa Bronze](#6-capa-bronze) |
+| 7 | [Capa Silver](#7-capa-silver) |
+| 8 | [Capa Gold](#8-capa-gold) |
+| 9 | [Resultado obtenido](#9-resultado-obtenido) |
+| 10 | [Calidad y testing](#10-calidad-y-testing) |
+| 11 | [Orquestación e infraestructura](#11-orquestación-e-infraestructura) |
+| 12 | [Decisiones técnicas](#12-decisiones-técnicas) |
+| 13 | [Estructura del repositorio](#13-estructura-del-repositorio) |
+| 14 | [Comandos auxiliares](#14-comandos-auxiliares) |
 
-El objetivo del proyecto es **comprender la estructura de los datos originales de Olist y construir un pipeline que realice las transformaciones necesarias para convertirlos en un dataset preparado para análisis**.
+---
 
-Los datos de origen se encuentran distribuidos en diferentes archivos y poseen distintas granularidades. Antes de poder analizarlos es necesario integrarlos, convertir sus tipos, validar su calidad y reorganizar su estructura.
+## 1. Objetivo
 
-### Preparación de los datos
+El objetivo del proyecto es **comprender la estructura de los datos originales de Olist y realizar las transformaciones necesarias para convertirlos en un dataset limpio, consistente, validado y preparado para análisis**.
 
-A lo largo del pipeline se realizan las siguientes tareas:
+Las fuentes originales no permiten un análisis directo. Están repartidas en archivos distintos que hay que integrar, sus fechas e importes llegan como texto, la información de ventas tiene una granularidad que no coincide con la que se necesita para analizarla, no existe una columna explícita de cantidad y los pedidos incluyen ocho estados diferentes, no todos los cuales representan una venta concretada.
 
-1. **Conservar los datos originales** sin modificaciones.
-2. **Validar los archivos de entrada** antes de comenzar las transformaciones.
-3. **Convertir los campos al tipo de dato adecuado**, especialmente fechas e importes.
-4. **Integrar la información de pedidos e ítems** mediante `order_id`.
-5. **Calcular la cantidad de unidades vendidas**, ya que el dataset no posee una columna de cantidad.
-6. **Consolidar los ítems por pedido y producto**.
-7. **Aplicar la regla de negocio que determina qué pedidos representan ventas válidas**.
-8. **Agregar los datos por fecha y producto**.
-9. **Validar los resultados entre las distintas capas** para detectar pérdidas, duplicaciones o diferencias inesperadas.
-
-### Dataset final
-
-El resultado del pipeline es el modelo:
+El pipeline resuelve cada uno de esos puntos por capas hasta producir un único modelo:
 
 ```text
 daily_product_sales
 ```
 
-Su granularidad es:
+con granularidad:
 
 ```text
 purchase_date + product_id
 ```
 
-Esto significa que **cada fila representa las ventas de un producto en una fecha determinada**.
+Esto significa que **cada fila del resultado representa las ventas de un producto en una fecha determinada**.
 
-El dataset final contiene:
+| Campo | Descripción |
+| ----- | ----------- |
+| `purchase_date` | Fecha de compra |
+| `product_id` | Identificador del producto |
+| `quantity` | Unidades vendidas |
+| `total_revenue` | Facturación total |
+| `total_freight` | Costo total de envío |
+| `orders_count` | Cantidad de pedidos distintos |
 
-| Campo           | Descripción                   |
-| --------------- | ----------------------------- |
-| `purchase_date` | Fecha de compra               |
-| `product_id`    | Identificador del producto    |
-| `quantity`      | Unidades vendidas             |
-| `total_revenue` | Facturación total             |
-| `total_freight` | Costo total de envío          |
-| `orders_count`  | Cantidad de pedidos distintos |
+---
 
-Para este modelo se consideran únicamente los pedidos con estado `delivered`.
+## 2. Cómo ejecutar el proyecto
 
-De esta forma, los archivos transaccionales originales se convierten en un **dataset analítico estructurado y validado**, preparado para análisis posteriores.
+El único requisito es tener **Docker Desktop** instalado. Java, Spark, dbt, Airflow y MinIO se ejecutan dentro de contenedores.
+
+### 1. Clonar el repositorio
+
+```bash
+git clone <url-del-repositorio>
+cd olist-data-pipeline
+```
+
+### 2. Verificar los datos de origen
+
+Los dos archivos que utiliza el pipeline vienen incluidos en el repositorio:
+
+```text
+data/bronze/olist_orders_dataset.csv
+data/bronze/olist_order_items_dataset.csv
+```
+
+No hace falta descargar nada. El dataset completo, con sus demás fuentes, está disponible en [Kaggle](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce).
+
+### 3. Levantar el entorno
+
+```bash
+docker compose up -d
+```
+
+Este comando construye las imágenes necesarias y deja el entorno listo. La primera ejecución tarda varios minutos porque descarga PySpark y el SDK de AWS; las siguientes arrancan en segundos.
+
+MinIO y Airflow quedan corriendo como servicios. Las imágenes de Spark y dbt quedan disponibles para que Airflow cree contenedores de tarea cuando las necesite.
+
+Airflow requiere alrededor de 40 segundos para migrar su base de metadatos. Está disponible cuando `docker compose ps` lo muestra como `healthy`.
+
+### 4. Ejecutar el pipeline desde Airflow
+
+Abrir `http://localhost:8080` e iniciar sesión con `admin` / `admin`.
+
+En la lista de DAGs aparece `olist_medallion`, inicialmente pausado. Activarlo con el interruptor de la izquierda y presionar el botón **▶ (Trigger DAG)**.
+
+En la vista **Graph** se ven las siete tareas ejecutándose en orden:
+
+| Tarea | Qué hace |
+| ----- | -------- |
+| `ingest_bronze` | Sube los CSV al bucket `bronze` sin modificarlos |
+| `validate_bronze` | Comprueba que los archivos sean legibles, completos y no estén vacíos |
+| `transform_silver` | Construye las tres tablas Silver con PySpark, aplicando 23 validaciones |
+| `validate_silver` | Verifica que no se hayan perdido ni duplicado filas entre Bronze y Silver |
+| `dbt_build_gold` | Aplica la regla de negocio y construye el modelo analítico |
+| `dbt_test` | Ejecuta los tests de dbt sobre el modelo y sus fuentes |
+| `validate_gold` | Comprueba que unidades y facturación de Gold coincidan con Silver |
+
+Las dependencias son lineales: si una tarea falla, queda en rojo y las siguientes no se ejecutan. Entrando a **Logs** puede verse qué validación falló y cuántas filas resultaron afectadas.
+
+En una máquina de desarrollo, una corrida completa suele finalizar en pocos minutos una vez construidas las imágenes.
+
+### 5. Comprobar las capas en MinIO
+
+Abrir `http://localhost:9001` e iniciar sesión con `minioadmin` / `minioadmin`.
+
+En **Object Browser** deberían existir tres buckets, creados automáticamente durante la ejecución:
+
+| Bucket | Contenido |
+| ------ | --------- |
+| `bronze` | Los dos CSV originales, sin modificar |
+| `silver` | `orders/`, `order_items/` y `order_product_sales/`, cada uno con su Parquet |
+| `gold` | `daily_product_sales.parquet` |
+
+Recorrer los buckets permite verificar el trayecto completo de los datos a través de las tres capas.
+
+### 6. Revisar el resultado
+
+El pipeline escribe el modelo analítico en la carpeta `output/`:
+
+```text
+output/
+├── daily_product_sales.parquet     # resultado principal
+├── daily_product_sales.csv         # mismo contenido, en formato legible
+└── reports/                        # detalle de las validaciones ejecutadas
+```
+
+El CSV puede abrirse directamente:
+
+```text
+purchase_date,product_id,quantity,total_revenue,total_freight,orders_count
+2016-09-15,5a6b04657a4c5ee34285d1e4619a96b4,3,134.97,8.49,1
+2016-10-03,107177bf61755f05c604fe57e02467d6,1,119.90,13.56,1
+```
+
+### Si algo falla
+
+| Síntoma | Causa |
+| ------- | ----- |
+| `Cannot connect to the Docker daemon` | Docker Desktop no está en ejecución |
+| `http://localhost:8080` no responde | Airflow todavía está migrando su base de metadatos |
+| Aparece `pull access denied` al construir | Docker intenta descargar las imágenes del proyecto antes de construirlas localmente. Es un aviso esperable; la construcción continúa |
+| Se quiere empezar desde cero | `docker compose down -v` elimina los volúmenes sin tocar los datos de origen |
 
 ---
 
 ## 3. Dataset y alcance
 
-El proyecto utiliza el **Brazilian E-Commerce Public Dataset by Olist**, disponible públicamente en Kaggle.
-
-[Ver dataset en Kaggle](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)
-
-Olist contiene información de aproximadamente 100.000 pedidos realizados en Brasil entre 2016 y 2018.
-
-El dataset completo está formado por varias fuentes relacionadas que permiten analizar pedidos, clientes, productos, vendedores, pagos, reseñas y ubicación geográfica.
-
-### Estructura general del dataset
-
-La siguiente imagen muestra las principales relaciones entre las fuentes disponibles:
+Olist es una empresa brasileña que conecta comerciantes con los principales marketplaces del país. Su dataset público reúne información de pedidos, clientes, productos, vendedores, pagos, reseñas y geolocalización, repartida en varias fuentes relacionadas.
 
 ![Relaciones entre los datasets de Olist](docs/images/olist_dataset_relationships.png)
 
-### Alcance del proyecto
+### Fuentes utilizadas
 
-Aunque el dataset completo contiene varias tablas, el pipeline utiliza únicamente las dos fuentes necesarias para construir el modelo de ventas:
+El pipeline trabaja con dos de esas fuentes, que son las que contienen la información necesaria para construir ventas por fecha y producto.
 
-```text
-olist_orders_dataset.csv
-olist_order_items_dataset.csv
-```
+`olist_orders_dataset.csv` contiene **99.441 pedidos**, con un registro por pedido. Aporta el identificador del pedido, la fecha de compra y el estado.
 
-`olist_orders_dataset.csv` aporta principalmente:
+| Columna | Descripción |
+| ------- | ----------- |
+| `order_id` | Identificador único del pedido |
+| `customer_id` | Identificador asociado al pedido |
+| `order_status` | Estado del pedido |
+| `order_purchase_timestamp` | Fecha y hora de compra |
+| `order_approved_at` | Fecha de aprobación |
+| `order_delivered_carrier_date` | Fecha de entrega al transportista |
+| `order_delivered_customer_date` | Fecha de entrega al cliente |
+| `order_estimated_delivery_date` | Fecha estimada de entrega |
 
-* identificador del pedido;
-* fecha de compra;
-* estado del pedido.
+`olist_order_items_dataset.csv` contiene **112.650 registros**, con un registro por ítem. Aporta el producto, el precio, el costo de envío y la relación con el pedido.
 
-`olist_order_items_dataset.csv` aporta:
+| Columna | Descripción |
+| ------- | ----------- |
+| `order_id` | Pedido asociado |
+| `order_item_id` | Posición del ítem dentro del pedido |
+| `product_id` | Producto |
+| `seller_id` | Vendedor |
+| `shipping_limit_date` | Fecha límite de envío |
+| `price` | Precio |
+| `freight_value` | Costo de envío |
 
-* producto;
-* precio;
-* costo de envío;
-* ítems incluidos en cada pedido.
+Ambas tablas se relacionan mediante `order_id`, en una relación de uno a muchos: un pedido puede contener varios ítems.
 
-Ambos archivos se relacionan mediante:
+### Delimitación del alcance
 
-```text
-order_id
-```
+Trabajar con dos fuentes es una decisión de alcance, no una limitación del diseño. El objetivo definido —ventas diarias por producto— se resuelve completamente con la información de pedidos e ítems, y acotarlo permitió profundizar en el pipeline en lugar de en la cantidad de tablas.
 
-Estas dos fuentes son suficientes para obtener ventas por fecha y producto.
-
-Las demás tablas quedan fuera del alcance actual porque no son necesarias para el objetivo definido. Podrían incorporarse en futuras extensiones para analizar, por ejemplo:
-
-* clientes y recompra;
-* categorías de productos;
-* medios de pago;
-* vendedores;
-* reseñas;
-* distribución geográfica.
-
-El alcance se concentra así en construir un **pipeline completo y reproducible sobre el núcleo transaccional de las ventas**.
+Las fuentes restantes permitirían extender el análisis más adelante hacia clientes y recompra, categorías de producto, medios de pago o distribución geográfica. La arquitectura está pensada para que incorporarlas signifique agregar tareas y modelos, no rediseñar el flujo.
 
 ---
 
-## 4. Fuentes utilizadas
+## 4. Exploración inicial
 
-### `olist_orders_dataset.csv`
+Antes de escribir el pipeline se exploró el dataset con pandas, para conocer su estructura y detectar particularidades que condicionaran el diseño.
 
-Contiene **99.441 pedidos**.
+| Métrica | Resultado |
+| ------- | --------: |
+| Pedidos | 99.441 |
+| Registros de `order_items` | 112.650 |
+| Pedidos con al menos un ítem | 98.666 |
+| Pedidos sin ítems | 775 |
+| Productos | 32.951 |
+| Vendedores | 3.095 |
+| Estados de pedido | 8 |
 
-Su granularidad es:
+### El hallazgo que define la transformación central
+
+> **No existe una columna de cantidad.**
+
+Cada fila de `order_items` representa **una unidad vendida**. Cuando un pedido incluye varias unidades del mismo producto, aparecen varias filas con la misma combinación `order_id + product_id`.
+
+Por lo tanto, la cantidad se obtiene contando registros:
 
 ```text
-1 registro = 1 pedido
+quantity = count(*)   por   order_id + product_id
 ```
 
-Las principales columnas son:
+La exploración también permitió confirmar que `price` funciona como **precio unitario** y no como importe de la línea. De las 102.425 combinaciones distintas de `order_id + product_id`, 7.088 aparecen más de una vez, y en todas ellas el precio se repite idéntico entre filas. Si `price` fuera el total de la línea, ese valor variaría con la cantidad.
 
-| Columna                         | Descripción                       |
-| ------------------------------- | --------------------------------- |
-| `order_id`                      | Identificador único del pedido    |
-| `customer_id`                   | Identificador asociado al pedido  |
-| `order_status`                  | Estado del pedido                 |
-| `order_purchase_timestamp`      | Fecha y hora de compra            |
-| `order_approved_at`             | Fecha de aprobación               |
-| `order_delivered_carrier_date`  | Fecha de entrega al transportista |
-| `order_delivered_customer_date` | Fecha de entrega al cliente       |
-| `order_estimated_delivery_date` | Fecha estimada de entrega         |
+Esta verificación es la que sostiene que `item_revenue = unit_price × quantity`, y por eso el pipeline la controla en cada ejecución.
+
+El análisis completo está en [`notebooks/01_exploracion_olist.ipynb`](notebooks/01_exploracion_olist.ipynb), y las particularidades detectadas en [`docs/anomalias_conocidas.md`](docs/anomalias_conocidas.md).
 
 ---
 
-### `olist_order_items_dataset.csv`
-
-Contiene **112.650 registros**.
-
-Su granularidad es:
-
-```text
-1 registro = 1 ítem del pedido
-```
-
-Las principales columnas son:
-
-| Columna               | Descripción                         |
-| --------------------- | ----------------------------------- |
-| `order_id`            | Pedido asociado                     |
-| `order_item_id`       | Posición del ítem dentro del pedido |
-| `product_id`          | Producto                            |
-| `seller_id`           | Vendedor                            |
-| `shipping_limit_date` | Fecha límite de envío               |
-| `price`               | Precio                              |
-| `freight_value`       | Costo de envío                      |
-
-La relación entre ambas fuentes es:
-
-```text
-orders
-  1
-  │
-  │ order_id
-  │
-  N
-order_items
-```
-
-Un pedido puede contener uno o varios ítems.
-
----
-
-## 5. Exploración inicial
-
-Antes de construir el pipeline se realizó una exploración del dataset con **pandas**.
-
-El objetivo de esta etapa fue comprender la estructura de las fuentes antes de definir las transformaciones.
-
-Los principales resultados fueron:
-
-| Métrica                      | Resultado |
-| ---------------------------- | --------: |
-| Pedidos                      |    99.441 |
-| Registros de `order_items`   |   112.650 |
-| Pedidos con al menos un ítem |    98.666 |
-| Pedidos sin ítems            |       775 |
-| Productos                    |    32.951 |
-| Vendedores                   |     3.095 |
-| Estados de pedido            |         8 |
-
-También se detectó una característica fundamental del dataset:
-
-> **No existe una columna explícita de cantidad.**
-
-Cuando un pedido contiene varias unidades del mismo producto, existen varias filas con la misma combinación:
-
-```text
-order_id + product_id
-```
-
-Por lo tanto, la cantidad debe obtenerse contando registros:
-
-```text
-quantity = count(*)
-```
-
-La exploración completa se encuentra en:
-
-[`notebooks/01_exploracion_olist.ipynb`](notebooks/01_exploracion_olist.ipynb)
-
-Las particularidades detectadas se documentan también en:
-
-[`docs/anomalias_conocidas.md`](docs/anomalias_conocidas.md)
-
----
-
-## 6. Arquitectura del pipeline
-
-El proyecto utiliza una arquitectura **Medallion**.
+## 5. Arquitectura del pipeline
 
 ```text
                    PySpark                         dbt
 
 ┌──────────────┐              ┌──────────────┐              ┌──────────────┐
 │    BRONZE    │ ───────────► │    SILVER    │ ───────────► │     GOLD     │
-│              │              │              │              │              │
-│ Datos        │              │ Datos        │              │ Modelo       │
-│ originales   │              │ preparados   │              │ analítico    │
+│   Datos      │              │   Datos      │              │   Modelo     │
+│  originales  │              │  preparados  │              │  analítico   │
 └──────────────┘              └──────────────┘              └──────────────┘
        │                             │                             │
        └────────────────────────── MinIO ──────────────────────────┘
 
-                           Airflow
-                              │
-                         Orquestación
-
-                           Docker
-                              │
-                    Entorno reproducible
+                              Airflow
+                              Docker
 ```
 
-Cada capa cumple una función diferente:
+Cada capa cumple una función distinta:
 
-| Capa       | Función                                                  |
-| ---------- | -------------------------------------------------------- |
-| **Bronze** | Conservar la información original                        |
-| **Silver** | Limpiar, tipar, integrar y validar                       |
-| **Gold**   | Aplicar reglas de negocio y preparar el modelo analítico |
+**Bronze** conserva la información original tal como fue recibida.
 
-Esta separación permite mantener claramente diferenciados:
+**Silver** la prepara técnicamente: convierte tipos, integra las tablas, resuelve la granularidad y valida el resultado. No aplica ninguna regla de negocio.
 
-* los datos de origen;
-* las transformaciones técnicas;
-* la lógica de negocio.
+**Gold** aplica la lógica de negocio y produce el modelo listo para consumo.
+
+### Por qué una arquitectura por capas
+
+El volumen actual del dataset es moderado, y estas transformaciones podrían resolverse con herramientas más simples. La arquitectura por capas no responde a una necesidad de procesamiento, sino a una de organización.
+
+Separar las responsabilidades permite que cada parte del pipeline evolucione de forma independiente. Incorporar una nueva fuente afecta a Silver, pero no obliga a tocar Gold. Cambiar la definición de qué constituye una venta afecta a Gold, pero no requiere reprocesar Bronze ni Silver. Aumentar el volumen de datos afecta al motor de procesamiento, pero no a la estructura del flujo.
+
+Esa separación es lo que hace que el pipeline pueda crecer sin rediseñarse. Las secciones siguientes explican, para cada capa, qué problema concreto resuelve la tecnología elegida.
 
 ---
 
-# 7. Capa Bronze
+## 6. Capa Bronze
 
-## ¿Qué representa?
+**Recibe** los dos CSV desde `data/bronze/`.
+**Almacena** los archivos en `s3://bronze/` sin modificarlos.
+**Genera** una copia exacta de la fuente dentro del almacenamiento del pipeline.
 
-Bronze es el punto de entrada del pipeline.
+La ingesta se realiza mediante [`jobs/ingest_bronze.py`](jobs/ingest_bronze.py), utilizando **boto3**.
 
-Su objetivo es conservar los archivos utilizados **tal como fueron recibidos**, sin aplicar transformaciones.
+### Por qué boto3 y no Spark
 
-Los archivos de origen se encuentran inicialmente en:
+Bronze debe conservar una copia fiel del origen. Si los archivos se cargaran con Spark, el motor los leería y volvería a escribirlos, convirtiendo cada CSV en un directorio de fragmentos cuyo contenido ya no es idéntico al original.
 
-```text
-data/bronze/
-```
+Subirlos con boto3 preserva los bytes exactos. Esto es lo que permite que la capa sirva como punto de referencia: ante cualquier duda sobre un dato en Silver o Gold, siempre se puede volver al archivo tal como entró al sistema.
 
-El pipeline toma únicamente:
+### Controles previos
 
-```text
-olist_orders_dataset.csv
-olist_order_items_dataset.csv
-```
-
-y los carga en MinIO:
-
-```text
-s3://bronze/
-```
+Antes de comenzar las transformaciones, [`jobs/validate_bronze.py`](jobs/validate_bronze.py) comprueba para cada archivo que pueda leerse, que contenga las columnas esperadas y que no esté vacío. Son 6 validaciones críticas: si alguna falla, el pipeline se detiene sin avanzar hacia Silver.
 
 ---
 
-## ¿Cómo se realiza la ingesta?
+## 7. Capa Silver
 
-La ingesta se ejecuta mediante:
+**Recibe** los archivos de Bronze.
+**Transforma** tipos y fechas, integra las tablas y resuelve la granularidad.
+**Genera** tres datasets en formato Parquet dentro de `s3://silver/`.
 
-```text
-jobs/ingest_bronze.py
-```
+| Dataset | Registros | Granularidad | Job |
+| ------- | --------: | ------------ | --- |
+| `orders` | 99.441 | un pedido | `bronze_to_silver_orders.py` |
+| `order_items` | 112.650 | un ítem | `bronze_to_silver_order_items.py` |
+| `order_product_sales` | 102.425 | un pedido y producto | `build_order_product_sales.py` |
 
-utilizando **boto3**.
+### `orders`
 
-Los archivos se suben directamente a MinIO sin pasar por Spark.
+Las columnas temporales se convierten a `timestamp` y se deriva `purchase_date` a partir de `order_purchase_timestamp`, que es la fecha con la que Gold construye las métricas diarias.
 
-Esto permite preservar los CSV originales sin modificar su contenido.
+Los valores nulos de las fechas se conservan. Son coherentes con el estado del pedido —uno cancelado nunca tiene fecha de entrega— y completarlos sería introducir información que no existe.
 
----
+### `order_items`
 
-## Validación de Bronze
-
-Antes de comenzar las transformaciones se verifica para cada archivo que:
-
-* pueda leerse;
-* contenga las columnas esperadas;
-* contenga registros.
-
-En esta etapa existen:
-
-**6 validaciones críticas.**
-
-Si alguna falla, el pipeline se detiene antes de continuar hacia Silver.
-
----
-
-# 8. Capa Silver
-
-## ¿Qué representa?
-
-Silver contiene los datos ya **preparados técnicamente**.
-
-En esta capa se realizan tareas de:
-
-* conversión de tipos;
-* tratamiento de fechas;
-* agregaciones;
-* integración entre tablas;
-* validación de calidad;
-* cambio de granularidad.
-
-Las transformaciones se realizan con **PySpark**.
-
-Los resultados se almacenan como **Parquet** en:
-
-```text
-s3://silver/
-```
-
----
-
-## Datasets de Silver
-
-Se generan tres datasets:
-
-| Dataset               | Registros | Granularidad         |
-| --------------------- | --------: | -------------------- |
-| `orders`              |    99.441 | un pedido            |
-| `order_items`         |   112.650 | un ítem              |
-| `order_product_sales` |   102.425 | un pedido + producto |
-
----
-
-## `orders`
-
-Se construye mediante:
-
-```text
-jobs/bronze_to_silver_orders.py
-```
-
-Las columnas temporales originales se convierten a `timestamp`.
-
-Además, se crea:
-
-```text
-purchase_date
-```
-
-a partir de:
-
-```text
-order_purchase_timestamp
-```
-
-Esto permite trabajar posteriormente con una fecha de compra directamente utilizable para agregaciones diarias.
-
----
-
-## `order_items`
-
-Se construye mediante:
-
-```text
-jobs/bronze_to_silver_order_items.py
-```
-
-Las principales conversiones son:
+Se tipan las columnas numéricas y temporales, manteniendo la granularidad original de una fila por unidad vendida:
 
 ```text
 order_item_id        → integer
@@ -445,27 +327,11 @@ price                → decimal(10,2)
 freight_value        → decimal(10,2)
 ```
 
-Los importes monetarios se manejan como valores decimales para conservar la precisión durante las agregaciones.
+Los importes se manejan como `decimal` y no como punto flotante: al sumar cientos de miles de valores monetarios, el redondeo del punto flotante introduce diferencias que impedirían comparar totales entre capas.
 
----
+### `order_product_sales`
 
-## `order_product_sales`
-
-Es la transformación central de Silver.
-
-Se construye mediante:
-
-```text
-jobs/build_order_product_sales.py
-```
-
-Primero se agrupan los ítems por:
-
-```text
-order_id + product_id
-```
-
-Luego se calculan:
+Es la transformación central de la capa. Consolida los ítems agrupando por `order_id + product_id`:
 
 ```text
 quantity      = count(*)
@@ -474,903 +340,300 @@ item_revenue  = sum(price)
 freight_total = sum(freight_value)
 ```
 
-De esta manera, si un pedido contiene varias unidades del mismo producto, esas filas pasan a representar un único registro con su cantidad correspondiente.
+`quantity` cuenta filas porque cada fila es una unidad. `unit_price` toma el máximo del grupo, que equivale a cualquiera de sus valores porque el precio es constante dentro del grupo, condición que el pipeline verifica explícitamente. `item_revenue` suma los precios, lo que equivale a multiplicar el precio unitario por la cantidad.
 
-Después se incorpora desde `orders`:
+Después se incorporan `purchase_date` y `order_status` desde `orders` mediante un **`LEFT JOIN`**. La elección no es indiferente: con un `INNER JOIN`, un ítem que apuntara a un pedido inexistente desaparecería sin dejar rastro. Con `LEFT JOIN` queda en el resultado con su contexto en nulo, y la validación de integridad lo detecta.
 
-```text
-purchase_date
-order_status
-```
+Silver no descarta pedidos por criterios de negocio. La tabla `orders` conserva los ocho estados y los 775 pedidos sin ítems. `order_product_sales`, al construirse desde `order_items`, contiene únicamente los pedidos que poseen ítems.
 
-mediante un:
+### Por qué PySpark
 
-```text
-LEFT JOIN
-```
+En el volumen actual, estas transformaciones también podrían resolverse con pandas o con SQL. PySpark se utiliza para concentrar el procesamiento estructural en una capa con un motor pensado para ese trabajo: aplicar esquemas explícitos, tipar de forma controlada, resolver joins y agregaciones, y escribir directamente en Parquet sobre almacenamiento compatible con S3.
 
-El `LEFT JOIN` permite conservar cualquier ítem que no encuentre correspondencia en `orders`, de manera que el problema pueda ser detectado por las validaciones en lugar de eliminarse silenciosamente.
+El valor está en la continuidad: la lógica de transformación puede mantenerse si el volumen aumenta y la ejecución pasa posteriormente a un entorno Spark con mayores recursos, sin tener que reescribirla con otra herramienta.
 
 ---
 
-## Validaciones de Silver
+## 8. Capa Gold
 
-En Silver se ejecutan:
+**Recibe** los datasets de Silver.
+**Aplica** la lógica de negocio.
+**Genera** el modelo analítico final en `s3://gold/` y una copia en `output/`.
 
-**23 validaciones.**
+El modelado se realiza con **dbt**, que contiene dos modelos:
 
-Distribuidas de la siguiente manera:
+| Modelo | Materialización | Función |
+| ------ | --------------- | ------- |
+| `stg_order_product_sales` | `view` | Capa de preparación sobre Silver |
+| `daily_product_sales` | `external` (Parquet) | Modelo analítico final |
 
-| Dataset               | Validaciones |
-| --------------------- | -----------: |
-| `orders`              |            5 |
-| `order_items`         |            9 |
-| `order_product_sales` |            9 |
-| **Total**             |       **23** |
+### La regla de negocio
 
-De ellas:
-
-* **20 son críticas**;
-* **3 son advertencias**.
-
-Se verifican, entre otras condiciones:
-
-* valores nulos;
-* claves únicas;
-* precios negativos;
-* fletes negativos;
-* cantidades válidas;
-* granularidad;
-* consistencia de precios;
-* integridad entre tablas;
-* reconciliación de unidades.
-
-Las validaciones críticas se ejecutan antes de escribir los resultados.
-
----
-
-# 9. Capa Gold
-
-## ¿Qué representa?
-
-Gold contiene los datos preparados para su consumo analítico.
-
-En esta capa ya no se realizan transformaciones destinadas únicamente a limpiar o tipar información.
-
-Su función es aplicar la **lógica de negocio** y construir el modelo final.
-
-Gold se desarrolla mediante **dbt**.
-
----
-
-## Modelos dbt
-
-El proyecto contiene dos modelos.
-
-### `stg_order_product_sales`
-
-Se materializa como:
-
-```text
-view
-```
-
-Funciona como capa de preparación sobre los datos Silver.
-
----
-
-### `daily_product_sales`
-
-Es el modelo analítico final.
-
-Se materializa como un archivo Parquet externo:
-
-```text
-s3://gold/daily_product_sales.parquet
-```
-
-También se genera una copia en:
-
-```text
-output/
-```
-
----
-
-## Regla de negocio
-
-Silver conserva los ocho estados presentes en Olist.
-
-La decisión sobre qué pedidos representan ventas válidas se toma únicamente en Gold.
-
-Actualmente:
+Silver conserva los ocho estados de pedido. La decisión sobre cuáles representan una venta concretada se toma únicamente en Gold, y está parametrizada en `dbt_project.yml`:
 
 ```yaml
 estados_venta_valida:
   - delivered
 ```
 
-Por lo tanto:
+Esta separación tiene una consecuencia práctica: modificar la definición de venta —por ejemplo, incorporar los pedidos en tránsito— significa editar esa lista y reconstruir Gold. Bronze y Silver no se tocan.
 
-> **El modelo final considera únicamente los pedidos con estado `delivered`.**
+### Estructura final
 
-Mantener esta regla en Gold permite modificar posteriormente la definición de venta sin reconstruir Bronze y Silver.
+Granularidad: `purchase_date + product_id`.
 
----
+| Campo | Tipo | Descripción |
+| ----- | ---- | ----------- |
+| `purchase_date` | `date` | Fecha de compra |
+| `product_id` | `string` | Producto |
+| `quantity` | `bigint` | Unidades vendidas |
+| `total_revenue` | `decimal` | Facturación total |
+| `total_freight` | `decimal` | Costo total de envío |
+| `orders_count` | `bigint` | Cantidad de pedidos distintos |
 
-## Estructura final
+### Por qué dbt teniendo PySpark
 
-La granularidad de `daily_product_sales` es:
+PySpark y dbt resuelven problemas distintos. PySpark prepara los datos; dbt los modela.
 
-```text
-purchase_date + product_id
-```
+La lógica de negocio se expresa mejor en SQL, y dbt aporta alrededor de ese SQL lo que un script suelto no tiene: dependencias explícitas entre modelos, documentación junto a la definición, tests declarativos y parametrización de las reglas.
 
-Sus columnas son:
-
-| Campo           | Descripción                   |
-| --------------- | ----------------------------- |
-| `purchase_date` | Fecha de compra               |
-| `product_id`    | Producto                      |
-| `quantity`      | Unidades vendidas             |
-| `total_revenue` | Facturación total             |
-| `total_freight` | Costo total de envío          |
-| `orders_count`  | Cantidad de pedidos distintos |
+La ventaja arquitectónica es que una regla de negocio puede cambiar sin que se modifique el procesamiento estructural. A medida que aparezcan más modelos analíticos, dbt resuelve el orden entre ellos sin que haya que coordinarlo manualmente.
 
 ---
 
-# 10. Resultado obtenido
+## 9. Resultado obtenido
 
-El modelo final contiene:
+| Métrica | Resultado |
+| ------- | --------: |
+| Registros | 92.587 |
+| Unidades | 110.197 |
+| Productos | 32.216 |
+| Días | 612 |
+| Facturación | BRL 13.221.498,11 |
+| Flete | BRL 2.198.275,64 |
+| Primera fecha | 2016-09-15 |
+| Última fecha | 2018-08-29 |
 
-| Métrica       |         Resultado |
-| ------------- | ----------------: |
-| Registros     |            92.587 |
-| Unidades      |           110.197 |
-| Productos     |            32.216 |
-| Días          |               612 |
-| Facturación   | BRL 13.221.498,11 |
-| Flete         |  BRL 2.198.275,64 |
-| Primera fecha |        2016-09-15 |
-| Última fecha  |        2018-08-29 |
+### Evolución entre capas
 
-El principal resultado del proyecto es:
+| Capa | Registros | Unidades | Facturación |
+| ---- | --------: | -------: | ----------: |
+| Bronze `order_items` | 112.650 | 112.650 | BRL 13.591.643,70 |
+| Silver `order_product_sales` | 102.425 | 112.650 | BRL 13.591.643,70 |
+| Gold `daily_product_sales` | 92.587 | 110.197 | BRL 13.221.498,11 |
 
-```text
-output/daily_product_sales.parquet
-```
+Entre Bronze y Silver los registros bajan porque las filas repetidas del mismo producto se consolidan en una sola, pero **no se pierde ninguna unidad**: la suma de `quantity` sigue siendo 112.650.
 
-También se genera una versión CSV:
-
-```text
-output/daily_product_sales.csv
-```
-
-para facilitar su inspección con otras herramientas.
+Entre Silver y Gold sí se reducen las unidades, en 2.453 (un 2,18 %), que corresponden a los pedidos cuyo estado no es `delivered`.
 
 ---
 
-## Evolución entre capas
+## 10. Calidad y testing
 
-| Capa                         | Registros | Unidades |       Facturación |
-| ---------------------------- | --------: | -------: | ----------------: |
-| Bronze `order_items`         |   112.650 |  112.650 | BRL 13.591.643,70 |
-| Silver `order_product_sales` |   102.425 |  112.650 | BRL 13.591.643,70 |
-| Gold `daily_product_sales`   |    92.587 |  110.197 | BRL 13.221.498,11 |
+El proyecto distingue dos tipos de comprobación que responden a preguntas diferentes. Las **validaciones** verifican que una ejecución concreta haya producido datos consistentes. Los **tests** verifican que el código y el modelo se comporten como declaran, con datasets controlados.
 
-Entre Silver y Gold se excluyen:
+### 10.1 Validaciones de datos
 
-**2.453 unidades**, equivalentes al **2,18 %** de las unidades de Silver.
+Se aplican 37 controles distribuidos en tres momentos, cada uno protegiendo contra un tipo de problema distinto.
 
-La diferencia corresponde a pedidos cuyo estado no es `delivered`.
+| Momento | Controles | Protege contra |
+| ------- | --------: | -------------- |
+| Sobre Bronze | 6 | Archivos ilegibles, vacíos o con el esquema cambiado |
+| Durante Silver | 23 | Claves duplicadas, campos obligatorios nulos, importes negativos, pérdida de unidades, problemas de integridad e inconsistencias de precio |
+| Entre capas | 8 | Pérdidas, duplicaciones y diferencias de unidades o facturación entre una capa y la siguiente |
 
----
+**Críticas y advertencias.** Una validación crítica detiene la ejecución antes de escribir, de modo que la capa nunca llega a contener datos que no pasaron el control. Una advertencia deja registro del problema y permite continuar.
 
-# 11. Calidad y reconciliación entre capas
+La distinción existe porque el dataset tiene particularidades conocidas que no invalidan el resultado. En la ejecución actual las validaciones críticas pasan y quedan dos advertencias: cuatro registros con `shipping_limit_date` posterior al período del dataset, y los 775 pedidos que nunca tuvieron ítems.
 
-Además de las validaciones realizadas durante el procesamiento, se comparan los resultados entre las diferentes capas.
+**Dos controles destacados de Silver** protegen las suposiciones sobre las que se apoya todo el modelo. La *consistencia del precio unitario* verifica que dentro de cada `order_id + product_id` el precio sea siempre el mismo; si variara, `price` no sería unitario y el cálculo de facturación dejaría de ser válido. La *reconciliación de unidades* verifica que la suma de `quantity` después de agrupar sea exactamente igual a la cantidad de filas de `order_items`.
 
-La lógica se encuentra en:
+Los resultados de cada ejecución quedan en `output/reports/` en formato JSON, con el detalle de cada control, su severidad y las filas afectadas.
 
-```text
-jobs/validate_medallion.py
-```
+### 10.2 pytest
 
-Se realizan:
+Los 36 tests se ejecutan contra almacenamiento local, sin necesidad de que MinIO esté levantado.
 
-```text
-4 validaciones Bronze ↔ Silver
-4 validaciones Silver ↔ Gold
-```
+**`test_environment.py`** comprueba que el entorno Spark esté disponible y que las fuentes puedan leerse correctamente.
 
-En total:
+**`test_config.py`** comprueba que las rutas de las capas cambien correctamente entre almacenamiento local y MinIO. Si esta pieza fallara, los jobs escribirían en la ubicación equivocada sin producir ningún error.
 
-**8 reconciliaciones entre capas.**
+**`test_transformations.py`** verifica el comportamiento de las transformaciones sobre datasets de pocas filas: que las fechas se conviertan correctamente, que los nulos se conserven, que los importes queden como decimales exactos, que tres filas del mismo producto produzcan `quantity = 3`, que dos productos distintos del mismo pedido queden separados y que se cumpla siempre `item_revenue = unit_price × quantity`.
 
-Estas verificaciones permiten detectar situaciones como:
+**`test_quality.py`** introduce deliberadamente datos incorrectos para comprobar que los controles los detecten: una clave duplicada, un precio negativo, un precio no numérico, una fecha inválida, un precio inconsistente dentro del mismo `order_id + product_id` y un `order_id` que no existe en `orders`. Los tests confirman también que una validación crítica interrumpa la ejecución y que una advertencia no lo haga.
 
-* filas perdidas;
-* registros duplicados por un join;
-* diferencias inesperadas de unidades;
-* diferencias de facturación;
-* cambios incorrectos de granularidad.
+### 10.3 dbt tests
 
----
+Los 24 tests se dividen en tres grupos.
 
-## Validaciones PySpark totales
+**Sobre las fuentes de Silver (13)** funcionan como contrato entre PySpark y dbt: verifican unicidad y ausencia de nulos en las columnas que el modelado consume, de manera que un cambio en Silver se detecte antes de construir Gold.
 
-| Grupo                      | Cantidad |
-| -------------------------- | -------: |
-| Validaciones Bronze        |        6 |
-| Validaciones Silver        |       23 |
-| Reconciliaciones Medallion |        8 |
-| **Total**                  |   **37** |
+**Sobre los modelos (8)** verifican que ninguna columna del resultado quede nula.
 
-Estas validaciones se ejecutan sobre los datos reales del pipeline.
+**Tests singulares (3)**, escritos como consultas SQL propias:
+
+| Test | Qué comprueba |
+| ---- | ------------- |
+| Granularidad | Que no existan duplicados para `purchase_date + product_id` |
+| Métricas válidas | Que no haya cantidades menores a 1 ni importes negativos |
+| Reconciliación con Silver | Que unidades y facturación coincidan con Silver aplicando la misma definición de venta válida |
+
+### 10.4 Por qué la reconciliación es importante
+
+Un dataset puede no tener nulos, respetar su granularidad y cumplir con todos sus tipos, y aun así tener totales incorrectos. Un join que duplica filas o un filtro que descarta de más producen un resultado con la forma esperada, donde todos los demás controles pasan.
+
+Esa clase de error solo se detecta comparando totales entre capas. Por eso la reconciliación exige que la facturación de Gold coincida al centavo con la de Silver filtrada por los mismos estados, y por eso los importes se manejan como `decimal`.
 
 ---
 
-# 12. Testing automatizado
+## 11. Orquestación e infraestructura
 
-Además de validar los datos procesados, el proyecto incorpora pruebas automatizadas sobre el código.
+| Componente | Responsabilidad |
+| ---------- | --------------- |
+| MinIO | Almacenamiento de las tres capas |
+| Airflow | Orquestación del flujo |
+| Spark | Procesamiento |
+| dbt | Modelado |
+| Docker | Entorno de ejecución |
 
-## pytest
+MinIO y Airflow son servicios persistentes. Spark y dbt funcionan como runtimes de tarea: se instancian para ejecutar un trabajo y se eliminan al terminar.
 
-Existen:
+### Airflow
 
-**36 tests con pytest.**
+Airflow no procesa datos. Su responsabilidad es definir el orden de ejecución, gestionar las dependencias, controlar los estados, registrar los logs de cada tarea, manejar los reintentos e impedir que una etapa se ejecute si la anterior no terminó bien.
 
-Los principales grupos son:
+Cada tarea del DAG `olist_medallion` se ejecuta mediante `DockerOperator`, que instancia un contenedor con la imagen correspondiente, espera su código de salida y lo elimina. Gracias a eso, la imagen de Airflow no necesita incluir Java, Spark ni dbt.
 
-| Archivo                   | Qué verifica                               |
-| ------------------------- | ------------------------------------------ |
-| `test_environment.py`     | funcionamiento del entorno Spark           |
-| `test_config.py`          | configuración y almacenamiento             |
-| `test_transformations.py` | lógica de transformación                   |
-| `test_quality.py`         | funcionamiento de los controles de calidad |
+El DAG se ejecuta con `schedule = None`. El dataset de Olist es histórico y cerrado, de modo que no hay datos nuevos que justifiquen corridas periódicas y la ejecución se dispara manualmente.
 
-Los tests utilizan:
+El valor se aprecia sobre todo pensando en el crecimiento: hoy son siete tareas en secuencia, y si más adelante se incorporan fuentes, transformaciones o modelos analíticos, se agregan como nuevas tareas con sus dependencias declaradas, sin construir un mecanismo de coordinación propio.
 
-```text
-OLIST_STORAGE=local
-```
+### MinIO
 
-Esto permite ejecutarlos sin depender de MinIO.
-
----
-
-## dbt tests
-
-El proyecto contiene:
-
-**24 tests de dbt.**
-
-Entre los controles realizados se encuentran:
-
-* valores no nulos;
-* unicidad;
-* granularidad;
-* métricas positivas;
-* reconciliación de facturación.
-
-De esta forma, las transformaciones y el modelo analítico cuentan con controles independientes.
-
----
-
-# 13. Orquestación con Airflow
-
-Airflow coordina las diferentes etapas del pipeline.
-
-El DAG principal se denomina:
-
-```text
-olist_medallion
-```
-
-y contiene siete tareas:
-
-```text
-ingest_bronze
-      │
-      ▼
-validate_bronze
-      │
-      ▼
-transform_silver
-      │
-      ▼
-validate_silver
-      │
-      ▼
-dbt_build_gold
-      │
-      ▼
-dbt_test
-      │
-      ▼
-validate_gold
-```
-
-Cada tarea tiene una función específica:
-
-| Tarea              | Función                         |
-| ------------------ | ------------------------------- |
-| `ingest_bronze`    | cargar los CSV en Bronze        |
-| `validate_bronze`  | validar los archivos originales |
-| `transform_silver` | construir Silver                |
-| `validate_silver`  | reconciliar Bronze y Silver     |
-| `dbt_build_gold`   | construir Gold                  |
-| `dbt_test`         | ejecutar los tests de dbt       |
-| `validate_gold`    | reconciliar Silver y Gold       |
-
----
-
-## Separación de responsabilidades
-
-Airflow **solo se encarga de la orquestación**.
-
-Las tareas utilizan `DockerOperator` para ejecutar los procesos en sus respectivos contenedores.
-
-```text
-Airflow → coordina
-Spark   → procesa
-dbt     → modela
-MinIO   → almacena
-```
-
-De esta manera, Airflow no necesita incorporar Java, Spark o dbt dentro de su propio entorno.
-
----
-
-## Ejecución
-
-El DAG utiliza:
-
-```text
-schedule = None
-```
-
-porque Olist es un dataset histórico y cerrado.
-
-El pipeline se ejecuta manualmente cuando se desea realizar una nueva corrida.
-
----
-
-# 14. Infraestructura
-
-Todo el entorno se ejecuta mediante **Docker**.
-
-El proyecto define cuatro servicios principales:
-
-| Servicio  | Tipo        | Función                 |
-| --------- | ----------- | ----------------------- |
-| `minio`   | persistente | almacenamiento de datos |
-| `airflow` | persistente | orquestación            |
-| `spark`   | temporal    | procesamiento PySpark   |
-| `dbt`     | temporal    | modelado Gold           |
-
----
-
-## MinIO
-
-MinIO proporciona almacenamiento compatible con S3 dentro del entorno local.
-
-Se utilizan tres buckets:
-
-```text
-bronze
-silver
-gold
-```
-
-La organización es:
+MinIO separa el **almacenamiento** del **procesamiento**. Las tres capas viven en una capa de almacenamiento independiente, a la que PySpark accede mediante `s3a://` y dbt mediante `s3://`.
 
 ```text
 MinIO
-│
-├── bronze/
-│   └── CSV originales
-│
-├── silver/
-│   ├── orders
-│   ├── order_items
-│   └── order_product_sales
-│
-└── gold/
-    └── daily_product_sales.parquet
+├── bronze/   CSV originales
+├── silver/   orders · order_items · order_product_sales
+└── gold/     daily_product_sales.parquet
 ```
 
-PySpark accede a MinIO mediante `s3a://`, mientras que dbt utiliza DuckDB para trabajar con los archivos almacenados mediante `s3://`.
+Esta separación permite que procesamiento, modelado y orquestación interactúen a través de una capa de almacenamiento común, sin depender directamente entre sí. Localmente se trabaja con la misma organización que tendría un data lake basado en object storage, y si el proyecto creciera hacia almacenamiento en la nube compatible con S3, el diseño conceptual de las capas se mantendría, aunque la migración requeriría ajustes de configuración y credenciales.
+
+### Docker
+
+El pipeline necesita cuatro runtimes distintos: Java con PySpark, dbt, Airflow y MinIO. Containerizarlos resuelve dos cosas: que el entorno de ejecución sea idéntico en cualquier máquina, y que esos runtimes no interfieran entre sí ni con el sistema donde se desarrolla.
+
+El proyecto mantiene tres imágenes separadas por responsabilidad —`olist-pipeline:dev`, `olist-dbt:dev` y `olist-airflow:dev`— en lugar de una sola con todo. dbt no necesita Java, y Airflow no necesita ninguno de los dos. Separarlas evita reconstruir todo cuando cambia la dependencia de un solo componente.
+
+### Parquet y DuckDB
+
+Silver y Gold se almacenan en **Parquet** porque conserva los tipos, utiliza almacenamiento columnar y permite compresión. Evita tener que volver a castear en cada lectura, reduce el tamaño de las capas procesadas frente al CSV y, si el volumen creciera, permite leer únicamente las columnas necesarias.
+
+dbt utiliza **DuckDB** como motor de consulta para leer esos Parquet y escribir el modelo final. La elección evita incorporar una base de datos o un metastore adicional únicamente para ejecutar el modelado. DuckDB no almacena los datos: estos siguen viviendo en MinIO.
+
+Los detalles de implementación de cada componente están en [`docs/arquitectura.md`](docs/arquitectura.md).
 
 ---
 
-## Contenedores persistentes y temporales
+## 12. Decisiones técnicas
 
-MinIO y Airflow permanecen activos como servicios.
+| Decisión | Qué problema resuelve |
+| -------- | --------------------- |
+| Arquitectura Medallion | Mantiene separados el origen, la preparación técnica y la lógica de negocio |
+| PySpark para el procesamiento | Concentra las transformaciones estructurales en un motor que admite mayor volumen sin cambiar la lógica |
+| dbt para el modelado | Aporta dependencias, documentación y tests sobre la lógica de negocio expresada en SQL |
+| MinIO como almacenamiento | Desacopla el almacenamiento del procesamiento |
+| Airflow para la orquestación | Controla orden, estados, logs y reintentos, y permite sumar tareas al flujo |
+| Docker por componente | Garantiza reproducibilidad y evita que los runtimes compartan dependencias |
+| Parquet en Silver y Gold | Conserva tipos, comprime y permite lectura columnar |
+| DuckDB como motor de dbt | Permite modelar sobre los Parquet sin incorporar una base de datos ni un metastore |
+| `decimal` en los importes | Evita el error de redondeo del punto flotante al sumar valores monetarios |
+| `quantity = count(*)` | El dataset no tiene columna de cantidad: cada fila es una unidad vendida |
+| `LEFT JOIN` contra `orders` | Mantiene visible cualquier ítem sin pedido asociado para que lo detecten las validaciones |
+| Regla de negocio en Gold | Permite redefinir qué es una venta sin reprocesar Bronze ni Silver |
+| Validar antes de escribir | Impide que una capa quede publicada con datos que no pasaron los controles |
+| Ingesta con boto3 | Conserva los archivos originales byte a byte |
+| Conversiones tolerantes | Un valor malformado queda nulo y lo reporta la capa de calidad, en lugar de interrumpir el proceso con un error del motor |
 
-Spark y dbt se utilizan únicamente durante la ejecución de una tarea.
-
-Se crean mediante:
-
-```text
-docker compose run --rm
-```
-
-y se eliminan al finalizar.
-
-Por ese motivo, es normal que Spark y dbt no permanezcan visibles como contenedores activos en Docker Desktop.
-
----
-
-# 15. Flujo completo del pipeline
-
-```text
-olist_orders_dataset.csv
-olist_order_items_dataset.csv
-            │
-            ▼
-      INGESTA - boto3
-            │
-            ▼
-        ┌────────┐
-        │ BRONZE │
-        │  CSV   │
-        └───┬────┘
-            │
-         PySpark
-            │
-            ▼
-        ┌────────┐
-        │ SILVER │
-        └───┬────┘
-            │
-            ├── orders
-            ├── order_items
-            └── order_product_sales
-            │
-           dbt
-            │
-            ▼
-        ┌────────┐
-        │  GOLD  │
-        └───┬────┘
-            │
-            ▼
- daily_product_sales
-            │
-            ▼
-       Validaciones
-            │
-            ▼
-output/daily_product_sales.parquet
-```
-
-Durante todo el recorrido:
-
-* **MinIO** almacena los datos;
-* **Airflow** coordina las etapas;
-* **Docker** proporciona los entornos de ejecución.
+El detalle de cada decisión, incluidas las alternativas descartadas, está en [`docs/decisiones_tecnicas.md`](docs/decisiones_tecnicas.md).
 
 ---
 
-# 16. Principales decisiones técnicas
-
-## Arquitectura Medallion
-
-La división Bronze, Silver y Gold permite separar claramente:
-
-* fuente original;
-* preparación técnica;
-* lógica de negocio.
-
-Cada capa puede evolucionar sin mezclar responsabilidades.
-
----
-
-## PySpark para las transformaciones
-
-PySpark se utiliza para:
-
-* tipado;
-* procesamiento de fechas;
-* agregaciones;
-* joins;
-* validaciones;
-* cambios de granularidad.
-
-El procesamiento queda así separado del modelado analítico.
-
----
-
-## dbt para Gold
-
-dbt se utiliza para transformar Silver en modelos preparados para análisis.
-
-Permite mantener la lógica de negocio en SQL y aporta:
-
-* modelos;
-* dependencias;
-* tests;
-* parametrización.
-
----
-
-## MinIO como almacenamiento
-
-MinIO permite utilizar una interfaz compatible con S3 dentro de un entorno local.
-
-De esta manera, Bronze, Silver y Gold se almacenan con una organización similar a la utilizada en un data lake.
-
----
-
-## Parquet en Silver y Gold
-
-Las capas procesadas utilizan **Parquet** porque:
-
-* conserva los tipos;
-* utiliza almacenamiento columnar;
-* permite compresión;
-* resulta adecuado para cargas analíticas.
-
-Actualmente:
-
-| Capa   | Tamaño aproximado |
-| ------ | ----------------: |
-| Bronze |           31,6 MB |
-| Silver |           22,5 MB |
-| Gold   |            3,5 MB |
-
----
-
-## Tipos decimales
-
-Los importes se convierten a:
-
-```text
-decimal(10,2)
-```
-
-Esto evita errores de precisión propios del punto flotante durante las agregaciones monetarias.
-
----
-
-## Cantidad mediante `count(*)`
-
-Olist no posee una columna de cantidad.
-
-Por lo tanto:
-
-```text
-quantity = count(*)
-```
-
-para cada combinación:
-
-```text
-order_id + product_id
-```
-
----
-
-## `LEFT JOIN`
-
-La información agregada de productos se combina con `orders` mediante:
-
-```text
-LEFT JOIN
-```
-
-Esto permite mantener visibles posibles registros sin correspondencia y detectarlos posteriormente con controles de calidad.
-
----
-
-## Reglas de negocio en Gold
-
-La definición:
-
-```text
-delivered = venta válida
-```
-
-se aplica únicamente en Gold.
-
-Silver conserva todos los estados disponibles.
-
-Esto permite modificar posteriormente la regla sin volver a procesar las capas anteriores.
-
----
-
-## Validar antes de escribir
-
-Las validaciones críticas se ejecutan antes de persistir los datos.
-
-Si una validación falla, la capa correspondiente no se actualiza con información incorrecta.
-
----
-
-## Bronze mediante boto3
-
-Los CSV originales se cargan mediante boto3 en lugar de Spark.
-
-Esto permite conservar los archivos originales sin que Spark los reescriba o divida en fragmentos.
-
----
-
-# 17. Puesta en marcha
-
-## Requisitos
-
-La máquina necesita:
-
-```text
-Docker
-Docker Compose
-```
-
-No es necesario instalar localmente:
-
-* Java;
-* Spark;
-* PySpark;
-* dbt;
-* Airflow;
-* MinIO.
-
----
-
-## Descargar los datos
-
-Descargar desde Kaggle:
-
-```text
-olist_orders_dataset.csv
-olist_order_items_dataset.csv
-```
-
-y colocarlos en:
-
-```text
-data/bronze/
-```
-
----
-
-## Windows
-
-Ejecutar:
-
-```powershell
-.\run.ps1 quickstart
-```
-
----
-
-## Linux, macOS, Git Bash o WSL
-
-Ejecutar:
-
-```bash
-./quickstart.sh
-```
-
-El script de Bash también verifica que Docker esté disponible, que existan los archivos de entrada y espera a que MinIO y Airflow se encuentren saludables.
-
----
-
-# 18. Interfaces disponibles
-
-## Airflow
-
-```text
-http://localhost:8080
-```
-
-Credenciales:
-
-```text
-Usuario: admin
-Contraseña: admin
-```
-
----
-
-## MinIO
-
-```text
-http://localhost:9001
-```
-
-Credenciales:
-
-```text
-Usuario: minioadmin
-Contraseña: minioadmin
-```
-
-La API de MinIO se encuentra disponible en:
-
-```text
-http://localhost:9000
-```
-
----
-
-# 19. Resultado generado
-
-El entregable analítico principal es:
-
-```text
-output/daily_product_sales.parquet
-```
-
-También se genera:
-
-```text
-output/daily_product_sales.csv
-```
-
-Los reportes de calidad disponibles se almacenan en:
-
-```text
-output/reports/
-```
-
----
-
-# 20. Comandos útiles
-
-En Windows se encuentra disponible `run.ps1`.
-
-### Consultar estado
-
-```powershell
-.\run.ps1 status
-```
-
-### Construir imágenes
-
-```powershell
-.\run.ps1 build
-```
-
-### Levantar servicios
-
-```powershell
-.\run.ps1 up
-```
-
-### Ejecutar Bronze → Silver
-
-```powershell
-.\run.ps1 pipeline
-```
-
-### Construir Gold
-
-```powershell
-.\run.ps1 gold
-```
-
-### Ejecutar validaciones
-
-```powershell
-.\run.ps1 validate
-```
-
-### Ejecutar todo el flujo
-
-```powershell
-.\run.ps1 all
-```
-
-### Ejecutar tests
-
-```powershell
-.\run.ps1 test
-```
-
-### Disparar el DAG
-
-```powershell
-.\run.ps1 dag
-```
-
-### Consultar logs
-
-```powershell
-.\run.ps1 logs
-```
-
-### Abrir una terminal Spark
-
-```powershell
-.\run.ps1 shell
-```
-
-### Detener servicios
-
-```powershell
-.\run.ps1 down
-```
-
-### Reiniciar completamente el entorno
-
-```powershell
-.\run.ps1 reset
-```
-
----
-
-# 21. Estructura del repositorio
+## 13. Estructura del repositorio
 
 ```text
 olist-data-pipeline/
 │
-├── data/
-│   ├── bronze/
-│   ├── silver/
-│   └── gold/
+├── data/bronze/                     # CSV de origen
 │
-├── jobs/
-│   ├── common/
-│   │   ├── config.py
-│   │   ├── spark.py
-│   │   ├── schemas.py
-│   │   ├── quality.py
-│   │   ├── storage.py
-│   │   └── logging_setup.py
-│   │
-│   ├── ingest_bronze.py
+├── jobs/                            # Procesamiento con PySpark
+│   ├── common/                      # Configuración, sesión Spark, esquemas,
+│   │                                #   validaciones y acceso a almacenamiento
+│   ├── ingest_bronze.py             # CSV → bucket bronze
 │   ├── validate_bronze.py
 │   ├── bronze_to_silver_orders.py
 │   ├── bronze_to_silver_order_items.py
-│   ├── build_order_product_sales.py
-│   ├── validate_medallion.py
-│   └── run_pipeline.py
+│   ├── build_order_product_sales.py # Transformación central
+│   ├── validate_medallion.py        # Reconciliación entre capas
+│   └── run_pipeline.py              # Ejecuta Bronze → Silver completo
 │
-├── dbt/
-│   ├── dbt_project.yml
-│   ├── profiles.yml
-│   ├── models/
-│   │   ├── staging/
-│   │   └── gold/
-│   └── tests/
+├── dbt/                             # Modelado Silver → Gold
+│   ├── dbt_project.yml              # Contiene la regla de negocio
+│   ├── models/staging/ y gold/
+│   └── tests/                       # Tests singulares
 │
-├── airflow/
-│   └── dags/
-│       └── olist_medallion.py
+├── airflow/dags/olist_medallion.py  # DAG de siete tareas
 │
-├── tests/
-├── docker/
+├── tests/                           # Tests de pytest
+├── docker/                          # Dockerfiles de los tres runtimes
+├── docs/                            # Documentación complementaria
+├── notebooks/                       # Exploración inicial
 │
-├── docs/
-│   └── images/
-│       └── olist_dataset_relationships.png
-│
-├── notebooks/
-│   └── 01_exploracion_olist.ipynb
-│
-├── output/
+├── output/                          # Resultado del pipeline
 │   ├── daily_product_sales.parquet
 │   ├── daily_product_sales.csv
 │   └── reports/
 │
 ├── docker-compose.yml
-├── quickstart.sh
-├── run.ps1
-├── requirements.txt
-├── requirements-dbt.txt
-└── .env.example
+├── quickstart.sh · run.ps1          # Ejecución alternativa sin Airflow
+└── requirements.txt · requirements-dbt.txt
 ```
 
 ---
 
-# 22. Documentación adicional
+## 14. Comandos auxiliares
 
-El repositorio incluye documentación complementaria para profundizar en distintos aspectos del proyecto:
+El camino recomendado para ejecutar el pipeline es el DAG de Airflow. Los comandos de esta sección están pensados para desarrollo y diagnóstico.
 
-* [`docs/arquitectura.md`](docs/arquitectura.md) — detalle de la arquitectura y sus capas.
-* [`docs/decisiones_tecnicas.md`](docs/decisiones_tecnicas.md) — decisiones de diseño y fundamentos.
-* [`docs/anomalias_conocidas.md`](docs/anomalias_conocidas.md) — particularidades detectadas en los datos y su tratamiento.
+Ejecutar las etapas directamente, sin pasar por Airflow, muestra el log en la terminal:
+
+```bash
+docker compose run --rm spark python -m jobs.run_pipeline        # Bronze → Silver
+docker compose run --rm dbt   dbt build                          # Silver → Gold
+docker compose run --rm spark python -m jobs.validate_medallion  # Reconciliación
+```
+
+Los scripts `quickstart.sh` y `run.ps1 quickstart` encadenan esas etapas incluyendo la construcción de imágenes.
+
+| Comando | Función |
+| ------- | ------- |
+| `docker compose run --rm spark pytest` | Ejecuta los tests de pytest |
+| `docker compose run --rm dbt dbt show --select daily_product_sales --limit 10` | Muestra las primeras filas del modelo final |
+| `docker compose logs -f airflow` | Sigue los logs de Airflow |
+| `docker compose ps` | Estado de los servicios |
+| `docker compose down` | Detiene el entorno conservando los datos |
+| `docker compose down -v` | Detiene el entorno y elimina los volúmenes |
+
+En Windows, `run.ps1` agrupa estos comandos con nombres más cortos: `build`, `up`, `all`, `test`, `dag`, `status`, `logs`, `shell`, `down` y `reset`.
+
+---
+
+## Documentación complementaria
+
+* [`docs/arquitectura.md`](docs/arquitectura.md) — detalle de las capas y de la implementación de cada componente.
+* [`docs/decisiones_tecnicas.md`](docs/decisiones_tecnicas.md) — fundamento de cada decisión y alternativas descartadas.
+* [`docs/anomalias_conocidas.md`](docs/anomalias_conocidas.md) — particularidades del dataset y cómo las trata el pipeline.
 * [`docs/roadmap.md`](docs/roadmap.md) — evolución de las etapas del proyecto.
 * [`notebooks/01_exploracion_olist.ipynb`](notebooks/01_exploracion_olist.ipynb) — exploración inicial del dataset.

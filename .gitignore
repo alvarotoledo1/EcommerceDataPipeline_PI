@@ -1,7 +1,12 @@
 # --- Datos ---------------------------------------------------------------
-# Bronze son los CSV originales del dataset: se descargan, no se versionan.
+
+# Bronze: se versionan únicamente los dos CSV que consume el pipeline, para que el
+# proyecto se pueda ejecutar apenas se clona. Los otros siete archivos del dataset
+# suman más de 100 MB y ninguno participa del flujo.
 data/bronze/*
 !data/bronze/.gitkeep
+!data/bronze/olist_orders_dataset.csv
+!data/bronze/olist_order_items_dataset.csv
 
 # Silver y Gold son derivados: se regeneran ejecutando el pipeline.
 data/silver/*
