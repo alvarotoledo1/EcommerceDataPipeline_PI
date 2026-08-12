@@ -1,0 +1,9 @@
+# Los scripts de shell tienen que llegar con finales de línea LF aunque se clonen en
+# Windows: con CRLF, bash falla con un "\r: command not found" que despista muchísimo.
+*.sh text eol=lf
+
+# PowerShell al revés: CRLF, que es lo que espera en Windows.
+*.ps1 text eol=crlf
+
+# Los Parquet son binarios; sin esto git podría intentar normalizarlos y corromperlos.
+*.parquet binary

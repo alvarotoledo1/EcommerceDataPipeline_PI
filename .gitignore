@@ -1,0 +1,51 @@
+# --- Datos ---------------------------------------------------------------
+# Bronze son los CSV originales del dataset: se descargan, no se versionan.
+data/bronze/*
+!data/bronze/.gitkeep
+
+# Silver y Gold son derivados: se regeneran ejecutando el pipeline.
+data/silver/*
+!data/silver/.gitkeep
+data/gold/*
+!data/gold/.gitkeep
+
+# --- Salidas de ejecución -------------------------------------------------
+# El entregable del proyecto (output/daily_product_sales.parquet y .csv) SÍ se
+# versiona a propósito: permite ver el resultado del pipeline sin tener que
+# ejecutarlo. Los reportes y logs no, porque se regeneran en cada corrida y solo
+# ensuciarían el historial.
+output/reports/*
+!output/reports/.gitkeep
+output/logs/*
+!output/logs/.gitkeep
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- Spark ----------------------------------------------------------------
+spark-warehouse/
+metastore_db/
+derby.log
+
+# --- dbt ------------------------------------------------------------------
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+# Catálogo de DuckDB: se regenera en cada corrida, los datos viven en MinIO.
+dbt/olist.duckdb
+dbt/olist.duckdb.wal
+
+# --- Credenciales ---------------------------------------------------------
+# `.env.example` sí se versiona; el `.env` real no.
+.env
+
+# --- Editor / SO ----------------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

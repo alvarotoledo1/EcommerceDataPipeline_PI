@@ -1,0 +1,28 @@
+# Conexión de dbt.
+#
+# DuckDB no es el almacén de los datos: los datos viven en MinIO como Parquet. DuckDB
+# actúa como motor de consulta, lee de s3://silver y escribe en s3://gold. El archivo
+# .duckdb solo guarda el catálogo (qué modelo apunta a qué archivo), y hace falta que
+# persista para que `dbt test` encuentre lo que creó `dbt run`.
+
+olist:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: /app/dbt/olist.duckdb
+      threads: 4
+
+      extensions:
+        # Habilita el acceso S3. Viene preinstalada en la imagen.
+        - httpfs
+
+      settings:
+        # DuckDB espera el endpoint SIN esquema, a diferencia de Spark y boto3.
+        s3_endpoint: "{{ env_var('MINIO_ENDPOINT_HOST', 'minio:9000') }}"
+        s3_region: "{{ env_var('MINIO_REGION', 'us-east-1') }}"
+        s3_access_key_id: "{{ env_var('MINIO_ROOT_USER', 'minioadmin') }}"
+        s3_secret_access_key: "{{ env_var('MINIO_ROOT_PASSWORD', 'minioadmin') }}"
+        # MinIO local habla HTTP y usa bucket en la ruta, no como subdominio.
+        s3_use_ssl: false
+        s3_url_style: "path"

@@ -1,0 +1,71 @@
+version: 2
+
+sources:
+  - name: silver
+    description: >
+      Capa Silver del pipeline, generada por los jobs de PySpark. Datos limpios,
+      tipados y validados, sin lógica de negocio aplicada.
+    meta:
+      # DuckDB lee los Parquet directamente desde MinIO. `{name}` se reemplaza por el
+      # nombre de cada tabla, así que no hay que repetir la ruta tabla por tabla.
+      external_location: "s3://silver/{name}/*.parquet"
+
+    tables:
+      - name: orders
+        description: Un registro por pedido, con todos los estados y fechas.
+        columns:
+          - name: order_id
+            description: Clave primaria del pedido.
+            data_tests:
+              - unique
+              - not_null
+          - name: purchase_date
+            description: Fecha de la compra, derivada de order_purchase_timestamp.
+            data_tests:
+              - not_null
+          - name: order_status
+            description: Estado del pedido. Silver conserva los ocho valores posibles.
+            data_tests:
+              - not_null
+
+      - name: order_items
+        description: >
+          Detalle de ítems. Granularidad de UNA UNIDAD por fila: el dataset no tiene
+          columna de cantidad.
+        columns:
+          - name: order_id
+            data_tests:
+              - not_null
+          - name: product_id
+            data_tests:
+              - not_null
+          - name: price
+            description: Precio unitario, no el importe de la línea.
+            data_tests:
+              - not_null
+
+      - name: order_product_sales
+        description: >
+          Ventas agregadas a nivel pedido-producto. Un registro por
+          (order_id, product_id), con la cantidad ya resuelta contando filas.
+        columns:
+          - name: order_id
+            data_tests:
+              - not_null
+          - name: product_id
+            data_tests:
+              - not_null
+          - name: quantity
+            description: Unidades del producto en el pedido.
+            data_tests:
+              - not_null
+          - name: item_revenue
+            description: Importe del producto en el pedido (unit_price * quantity).
+            data_tests:
+              - not_null
+          - name: purchase_date
+            data_tests:
+              - not_null
+          - name: order_status
+            data_tests:
+              - not_null

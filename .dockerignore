@@ -1,0 +1,17 @@
+# El código y los datos se montan como volumen, no se copian a la imagen.
+# Esto mantiene el contexto de build en unos pocos KB.
+
+data/
+output/
+notebooks/
+docs/
+.git/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+spark-warehouse/
+metastore_db/
+derby.log

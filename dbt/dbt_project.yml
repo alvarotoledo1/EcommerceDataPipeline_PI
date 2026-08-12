@@ -1,0 +1,32 @@
+name: "olist_gold"
+version: "1.0.0"
+config-version: 2
+
+profile: "olist"
+
+model-paths: ["models"]
+test-paths: ["tests"]
+clean-targets: ["target", "dbt_packages", "logs"]
+
+vars:
+  # LA decisión de negocio del proyecto: qué estados de pedido cuentan como venta.
+  #
+  # Vive acá, en Gold, y no en el pipeline de PySpark. Silver conserva los ocho
+  # estados justamente para que esta definición se pueda cambiar sin reprocesar nada.
+  # `delivered` es el 97,02 % de los pedidos; sumar `shipped` es cambiar esta lista.
+  estados_venta_valida: ["delivered"]
+
+  # Dónde se deja la copia local del modelo final, además del bucket `gold`.
+  # Es la carpeta `output/` del proyecto, montada en el contenedor.
+  directorio_salida: "/app/output"
+
+models:
+  olist_gold:
+    staging:
+      # Vistas: no materializan datos, solo dan nombre y forma a lo que hay en Silver.
+      +materialized: view
+    gold:
+      # `external` escribe el resultado como Parquet en MinIO, que es lo que consume
+      # cualquier herramienta de análisis aguas abajo.
+      +materialized: external
+      +format: parquet

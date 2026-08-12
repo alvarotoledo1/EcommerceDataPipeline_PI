@@ -1,0 +1,7 @@
+# Dependencias del modelado Silver -> Gold.
+#
+# Adaptador DuckDB: lee los Parquet de Silver directamente desde MinIO por S3 y
+# escribe Gold como Parquet, sin necesitar un motor de base de datos aparte ni un
+# metastore. Ver docs/decisiones_tecnicas.md para el porqué de esta elección.
+
+dbt-duckdb==1.11.0

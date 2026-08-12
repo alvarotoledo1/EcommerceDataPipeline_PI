@@ -1,0 +1,23 @@
+# Entorno de ejecución de dbt (capa Silver -> Gold).
+#
+# Imagen separada de la de Spark a propósito: dbt no necesita Java ni PySpark, y
+# mezclarlos daría una imagen de varios GB para correr unas consultas SQL. La
+# separación también refleja la de responsabilidades: PySpark procesa, dbt modela.
+
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DBT_PROFILES_DIR=/app/dbt
+
+COPY requirements-dbt.txt ./
+RUN pip install --no-cache-dir -r requirements-dbt.txt
+
+# La extensión httpfs es la que le permite a DuckDB leer y escribir en MinIO por S3.
+# Se instala al construir la imagen para que las ejecuciones no dependan de tener
+# internet ni paguen la descarga cada vez.
+RUN python -c "import duckdb; duckdb.connect().execute('INSTALL httpfs')"
+
+WORKDIR /app/dbt
+
+CMD ["dbt", "--help"]

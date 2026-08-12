@@ -1,0 +1,60 @@
+version: 2
+
+models:
+  - name: daily_product_sales
+    description: >
+      Ventas diarias por producto. Modelo analítico principal de la capa Gold.
+
+      Incluye únicamente los pedidos cuyo estado se considera venta concretada
+      (ver la variable `estados_venta_valida` en dbt_project.yml; hoy: `delivered`).
+      Ese filtro es la razón de ser de esta capa: Silver conserva los ocho estados
+      para que la definición se pueda cambiar sin reprocesar los datos.
+
+      Granularidad: un registro por (purchase_date, product_id).
+
+    columns:
+      - name: purchase_date
+        description: Fecha de compra del pedido.
+        data_tests:
+          - not_null
+
+      - name: product_id
+        description: Identificador del producto.
+        data_tests:
+          - not_null
+
+      - name: quantity
+        description: >
+          Unidades vendidas del producto ese día. Resuelto en Silver contando filas
+          de order_items, porque el dataset no tiene columna de cantidad.
+        data_tests:
+          - not_null
+          # El rango (> 0) y la granularidad se verifican con tests singulares en
+          # dbt/tests/, para no depender del paquete dbt_utils.
+
+      - name: total_revenue
+        description: Facturación del producto ese día, sin flete.
+        data_tests:
+          - not_null
+
+      - name: total_freight
+        description: Costo de envío acumulado del producto ese día.
+        data_tests:
+          - not_null
+
+      - name: orders_count
+        description: Cantidad de pedidos distintos que incluyeron el producto ese día.
+        data_tests:
+          - not_null
+
+  - name: stg_order_product_sales
+    description: >
+      Vista sobre la tabla Silver `order_product_sales`. Sin filtros ni reglas de
+      negocio: aísla a los modelos de Gold de la ubicación física de los Parquet.
+    columns:
+      - name: order_id
+        data_tests:
+          - not_null
+      - name: product_id
+        data_tests:
+          - not_null

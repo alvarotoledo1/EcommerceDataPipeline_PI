@@ -1,0 +1,119 @@
+# Entorno de ejecución local del pipeline.
+#
+#   docker compose build
+#   docker compose up -d minio                       # almacenamiento de las capas
+#   docker compose run --rm spark python -m jobs.run_pipeline
+#   docker compose run --rm spark pytest
+#
+# Consola de MinIO: http://localhost:9001 (usuario/clave del .env)
+
+services:
+  # --- Almacenamiento de las capas Medallion (S3-compatible) ---------------
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    # Vuelve solo al reiniciar Docker Desktop o la máquina. Sin esto hay que acordarse
+    # de levantar el stack a mano cada vez.
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"   # API S3
+      - "9001:9001"   # consola web
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      # Los jobs no deben arrancar hasta que MinIO acepte conexiones.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # --- Runtime de PySpark --------------------------------------------------
+  spark:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: olist-pipeline:dev
+    working_dir: /app
+    environment:
+      OLIST_PROJECT_ROOT: /app
+      # "s3" usa MinIO; "local" usa data/ en disco (lo que usan los tests).
+      OLIST_STORAGE: ${OLIST_STORAGE:-s3}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      # El proyecto completo, para editar en el host y ejecutar en el contenedor.
+      - .:/app
+    depends_on:
+      minio:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+
+  # --- Modelado Silver -> Gold ---------------------------------------------
+  dbt:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dbt
+    image: olist-dbt:dev
+    working_dir: /app/dbt
+    environment:
+      DBT_PROFILES_DIR: /app/dbt
+      # DuckDB quiere el endpoint sin esquema, Spark y boto3 lo quieren con esquema.
+      MINIO_ENDPOINT_HOST: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - .:/app
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  # --- Orquestación --------------------------------------------------------
+  airflow:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.airflow
+    image: olist-airflow:dev
+    restart: unless-stopped
+    # root para poder usar el socket de Docker, que pertenece a root en Docker Desktop.
+    user: "0:0"
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW_HOME: /opt/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/state/airflow.db
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+      # Opcional: si no se define, el DAG deduce la ruta del proyecto en el host
+      # inspeccionando el montaje de /opt/airflow/dags. Ver .env.example.
+      HOST_PROJECT_PATH: ${HOST_PROJECT_PATH:-}
+      DOCKER_NETWORK: ${DOCKER_NETWORK:-ecommercedatapipeline_pi_default}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - airflow-state:/opt/airflow/state
+      - airflow-logs:/opt/airflow/logs
+      # Así Airflow puede lanzar contenedores hermanos en lugar de ejecutar el trabajo
+      # dentro de sí mismo.
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+volumes:
+  minio-data:
+  airflow-state:
+  airflow-logs:

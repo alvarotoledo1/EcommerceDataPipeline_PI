@@ -1,0 +1,11 @@
+# Dependencias del entorno de ejecución del pipeline (imagen Docker).
+# El notebook de exploración corre aparte, con pandas y jupyter locales.
+
+pyspark==4.0.4
+
+# Cliente S3 para la ingesta a MinIO. Spark lee por s3a://, pero subir los CSV
+# originales byte a byte requiere un cliente HTTP común: Bronze tiene que conservar
+# el archivo tal cual, no una versión reescrita por Spark.
+boto3==1.35.99
+
+pytest==8.3.4

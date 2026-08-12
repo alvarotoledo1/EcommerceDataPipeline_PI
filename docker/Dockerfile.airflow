@@ -1,0 +1,22 @@
+# Airflow para orquestar el pipeline.
+#
+# La imagen solo agrega el provider de Docker: Airflow no ejecuta Spark ni dbt, los
+# lanza como contenedores. Por eso acá no hay Java, ni PySpark, ni dbt.
+
+FROM apache/airflow:2.10.5-python3.12
+
+USER airflow
+
+RUN pip install --no-cache-dir \
+    "apache-airflow-providers-docker==3.14.1"
+
+USER root
+COPY docker/airflow-entrypoint.sh /usr/local/bin/airflow-entrypoint.sh
+RUN chmod +x /usr/local/bin/airflow-entrypoint.sh
+
+# Se corre como root para poder usar /var/run/docker.sock, que en Docker Desktop
+# pertenece a root. Es aceptable en un entorno de desarrollo local; en producción se
+# usaría un runner con permisos acotados en lugar de montar el socket.
+USER root
+
+ENTRYPOINT ["/usr/local/bin/airflow-entrypoint.sh"]
